@@ -1,0 +1,36 @@
+#include <windows.h>
+#include <commctrl.h>
+#include "setup_res.h"
+
+1 24 "setup.manifest"
+
+IDD_MAIN DIALOGEX 0, 0, 340, 262
+STYLE DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX
+CAPTION "Tech2Win D-PDU J2534 bridge"
+FONT 9, "Segoe UI"
+BEGIN
+    GROUPBOX        "Driver", -1, 7, 4, 326, 38
+    LTEXT           "", IDC_STATUS, 15, 15, 222, 22
+    PUSHBUTTON      "Install", IDC_INSTALL, 241, 17, 42, 14
+    PUSHBUTTON      "Uninstall", IDC_UNINSTALL, 285, 17, 42, 14
+
+    GROUPBOX        "J2534 adapters", -1, 7, 45, 326, 100
+    LTEXT           "Tech2Win lists these in its Select Vehicle Communication Interface dialog.", -1, 15, 56, 310, 9
+    CONTROL         "", IDC_LIST, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP, 15, 67, 310, 56
+    PUSHBUTTON      "Refresh", IDC_REFRESH, 283, 126, 42, 14
+
+    GROUPBOX        "K-Line pins", -1, 7, 148, 326, 74
+    LTEXT           "When Tech2Win asks for pin 7, use:", -1, 15, 162, 170, 9
+    COMBOBOX        IDC_PIN7, 190, 160, 135, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "When Tech2Win asks for pin 8, use:", -1, 15, 178, 170, 9
+    COMBOBOX        IDC_PIN8, 190, 176, 135, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "When Tech2Win asks for pins 7 + 8, use:", -1, 15, 194, 170, 9
+    COMBOBOX        IDC_PIN78, 190, 192, 135, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Bridged pin 7 + 8 in the OBD outlet? Use pin 7 for 7 + 8 (and for 8).", -1, 15, 209, 310, 9
+
+    AUTOCHECKBOX    "Write debug log", IDC_LOG, 9, 228, 80, 10
+    PUSHBUTTON      "Open log", IDC_OPENLOG, 90, 226, 42, 14
+    LTEXT           "", IDC_VERSION, 9, 247, 150, 9
+    DEFPUSHBUTTON   "Save", IDOK, 241, 242, 42, 14
+    PUSHBUTTON      "Close", IDCANCEL, 285, 242, 42, 14
+END

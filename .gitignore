@@ -1,0 +1,4 @@
+# make output, incl. the throwaway wine prefix the tests use
+build/
+# JohnJocke's driver, reference only (own git repo, GPLv3)
+dpdu-passthru/

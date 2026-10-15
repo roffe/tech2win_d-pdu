@@ -1,0 +1,12 @@
+#define IDD_MAIN      100
+#define IDC_STATUS    1001
+#define IDC_INSTALL   1002
+#define IDC_UNINSTALL 1003
+#define IDC_LIST      1004
+#define IDC_REFRESH   1005
+#define IDC_PIN7      1006
+#define IDC_PIN8      1007
+#define IDC_PIN78     1008
+#define IDC_LOG       1009
+#define IDC_OPENLOG   1010
+#define IDC_VERSION   1011

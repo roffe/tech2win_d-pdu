@@ -1,0 +1,78 @@
+name: Build
+
+# push to master/develop -> rolling "nightly" pre-release, tag v* -> release, PR -> build + test only
+on:
+  push:
+    branches:
+    - 'master'
+    - 'develop'
+    tags:
+    - 'v*'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Ubuntu's default mingw g++ uses the win32 thread model, we need std::thread
+  MAKEFLAGS: CXX=i686-w64-mingw32-g++-posix
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v6.0.2
+      with:
+        fetch-depth: 0 # git describe needs the tags for the version
+
+    - name: Get dependencies
+      run: |
+        sudo dpkg --add-architecture i386
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends make zip g++-mingw-w64-i686-posix binutils-mingw-w64-i686 wine wine32:i386 xvfb
+
+    - name: Build
+      run: make
+
+    - name: Test (wine, fake J2534 adapter)
+      run: xvfb-run -a make test
+
+    - name: Package
+      run: make dist
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: t2wdpdu
+        path: build/t2wdpdu-*.zip
+
+    - name: Delete previous nightly release
+      if: github.event_name == 'push' && github.ref_type == 'branch'
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_REPO: ${{ github.repository }}
+      run: gh release delete nightly --yes --cleanup-tag || true
+
+    - name: Publish nightly release
+      if: github.event_name == 'push' && github.ref_type == 'branch'
+      uses: softprops/action-gh-release@v3
+      with:
+        tag_name: nightly
+        name: Nightly Build
+        body: Automated build from `${{ github.ref_name }}` at ${{ github.sha }}.
+        prerelease: true
+        make_latest: false
+        target_commitish: ${{ github.sha }}
+        files: build/t2wdpdu-*.zip
+
+    - name: Release
+      if: github.ref_type == 'tag'
+      uses: softprops/action-gh-release@v3
+      with:
+        make_latest: true
+        files: build/t2wdpdu-*.zip

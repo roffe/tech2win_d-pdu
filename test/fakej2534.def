@@ -1,0 +1,16 @@
+LIBRARY fakej2534.dll
+EXPORTS
+PassThruOpen
+PassThruClose
+PassThruConnect
+PassThruDisconnect
+PassThruReadMsgs
+PassThruWriteMsgs
+PassThruStartPeriodicMsg
+PassThruStopPeriodicMsg
+PassThruStartMsgFilter
+PassThruStopMsgFilter
+PassThruSetProgrammingVoltage
+PassThruReadVersion
+PassThruGetLastError
+PassThruIoctl
