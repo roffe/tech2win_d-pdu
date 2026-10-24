@@ -36,6 +36,10 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends make zip g++-mingw-w64-i686-posix binutils-mingw-w64-i686 wine wine32:i386 xvfb
 
+    - name: Version from tag
+      if: github.ref_type == 'tag'
+      run: echo "MAKEFLAGS=$MAKEFLAGS VERSION=$GITHUB_REF_NAME" >> "$GITHUB_ENV"
+
     - name: Build
       run: make
 
