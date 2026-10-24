@@ -4,7 +4,7 @@
 
 1 24 "setup.manifest"
 
-IDD_MAIN DIALOGEX 0, 0, 340, 262
+IDD_MAIN DIALOGEX 0, 0, 340, 296
 STYLE DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX
 CAPTION "Tech2Win D-PDU J2534 bridge"
 FONT 9, "Segoe UI"
@@ -19,18 +19,22 @@ BEGIN
     CONTROL         "", IDC_LIST, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP, 15, 67, 310, 56
     PUSHBUTTON      "Refresh", IDC_REFRESH, 283, 126, 42, 14
 
-    GROUPBOX        "K-Line pins", -1, 7, 148, 326, 74
+    GROUPBOX        "K-Line pins", -1, 7, 148, 326, 108
     LTEXT           "When Tech2Win asks for pin 7, use:", -1, 15, 162, 170, 9
     COMBOBOX        IDC_PIN7, 190, 160, 135, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     LTEXT           "When Tech2Win asks for pin 8, use:", -1, 15, 178, 170, 9
     COMBOBOX        IDC_PIN8, 190, 176, 135, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     LTEXT           "When Tech2Win asks for pins 7 + 8, use:", -1, 15, 194, 170, 9
     COMBOBOX        IDC_PIN78, 190, 192, 135, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    LTEXT           "Bridged pin 7 + 8 in the OBD outlet? Use pin 7 for 7 + 8 (and for 8).", -1, 15, 209, 310, 9
+    LTEXT           "Bridged pin 7 + 8 in the OBD outlet? Use pin 7 for 7 + 8 and 8, and empty the list below.", -1, 15, 209, 310, 9
+    LTEXT           "Fast init to these addresses forces the pin:", -1, 15, 226, 170, 9
+    EDITTEXT        IDC_INITPINS, 190, 224, 135, 12, ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "Hex address:pin (7, 8 or 78). Tech2Win keeps one K-line link for every module,", -1, 15, 240, 310, 9
+    LTEXT           "so this moves the SAAB pin 8 modules (24:8 28:8 70:8). Empty = off.", -1, 15, 249, 310, 9
 
-    AUTOCHECKBOX    "Write debug log", IDC_LOG, 9, 228, 80, 10
-    PUSHBUTTON      "Open log", IDC_OPENLOG, 90, 226, 42, 14
-    LTEXT           "", IDC_VERSION, 9, 247, 150, 9
-    DEFPUSHBUTTON   "Save", IDOK, 241, 242, 42, 14
-    PUSHBUTTON      "Close", IDCANCEL, 285, 242, 42, 14
+    AUTOCHECKBOX    "Write debug log", IDC_LOG, 9, 262, 80, 10
+    PUSHBUTTON      "Open log", IDC_OPENLOG, 90, 260, 42, 14
+    LTEXT           "", IDC_VERSION, 9, 281, 150, 9
+    DEFPUSHBUTTON   "Save", IDOK, 241, 276, 42, 14
+    PUSHBUTTON      "Close", IDCANCEL, 285, 276, 42, 14
 END

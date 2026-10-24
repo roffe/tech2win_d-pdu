@@ -1,7 +1,8 @@
 // Drives t2wdpdu.dll the way Tech2Win does (call order, ctrl data, status waits from
 // notes/host_api_kw2000.md + host_other_protocols.md). Exit code 0 = expectation met.
 //
-// pduhost pins=7,8 ecu=41 expect=ok|timeout|connectfail [j1962=none|0x0800] [proto=kw82]
+// pduhost pins=7,8 ecu=41[,28,..] expect=ok|timeout|connectfail [j1962=none|0x0800] [proto=kw82]
+// Several ecus = one session each on the same link, like Tech2Win (bus check on DICE, then ABS).
 // pduhost proto=can   (Tech2Win's CANdi session: SW + MS + HS, 2 CLLs each, notes/host_can_*.md)
 #include <windows.h>
 #include <cstdio>
@@ -52,6 +53,8 @@ static void __stdcall cb(T_PDU_EVT_DATA, UNUM32, UNUM32, void *, void *) { SetEv
 static UNUM32 hMod, hCLL;
 static std::vector<std::vector<UNUM8>> results;
 static int errors;
+static void *lastTag; // pCoPTag of the last RESULT
+static bool tag2() { return lastTag && *(int *)lastTag == 2; } // how Tech2Win spots its own TesterPresent answers
 
 struct Res {
     UNUM32 acc, flag;
@@ -73,6 +76,7 @@ static bool waitStatus(UNUM32 want, DWORD ms = 3000, UNUM32 cll = 0) {
                     FAIL("RESULT without 4 RxFlag bytes (Tech2Win's CAN code crashes on that)");
                 UNUM8 *f = r->RxFlag.pFlagData;
                 results.emplace_back(r->pDataBytes, r->pDataBytes + r->NumDataBytes);
+                lastTag = e->pCoPTag;
                 rx[cll].push_back({r->AcceptanceId, (UNUM32)f[0] << 24 | f[1] << 16 | f[2] << 8 | f[3], results.back()});
             } else if (e->ItemType == PDU_IT_ERROR) {
                 errors++;
@@ -435,7 +439,11 @@ static int canSession() {
 int main(int argc, char **argv) {
     std::string pins = arg(argc, argv, "pins", "7"), expect = arg(argc, argv, "expect", "ok"), j1962 = arg(argc, argv, "j1962", "");
     bool kw82 = arg(argc, argv, "proto", "") == "kw82";
-    UNUM8 ecu = strtoul(arg(argc, argv, "ecu", "41").c_str(), nullptr, 16);
+    std::vector<UNUM8> ecus;
+    std::string ecuArg = arg(argc, argv, "ecu", "41");
+    for (const char *p = ecuArg.c_str(); *p; p += strspn(p, ","))
+        ecus.push_back(strtoul(p, (char **)&p, 16));
+    UNUM8 ecu = ecus[0];
     ev = CreateEventA(nullptr, FALSE, FALSE, nullptr);
 
     // enumeration pass: load, list, unload (Tech2Win does this for its VCI dialog)
@@ -525,6 +533,9 @@ int main(int argc, char **argv) {
         setParam("CP_TInil", 25000);
         setParam("CP_InitializationSettings", 2);
     }
+    for (UNUM8 e : ecus) {
+    ecu = e;
+    printf("session with 0x%02X\n", ecu);
     cop(PDU_COPT_UPDATEPARAM, {}, nullptr, kw82 ? 4 : 3);
     if (!waitStatus(PDU_COPST_FINISHED))
         FAIL("UPDATEPARAM FINISHED");
@@ -581,12 +592,35 @@ int main(int argc, char **argv) {
     if (CALL(PDUCancelComPrimitive, hMod, hCLL, prev) || !waitStatus(PDU_COPST_CANCELLED))
         FAIL("last cancel");
 
-    if (!kw82) { // Tech2Win's own TesterPresent: NumRecv 1, waits FINISHED
+    if (!kw82) { // Tech2Win's own TesterPresent: tag 2, NumRecv 1, waits FINISHED
+        // ECU ignores it (tp=silent): still exactly one RESULT, empty, tag 2, no ERROR, or Tech2Win
+        // never sends again (notes host_api_kw2000.md 11.5)
+        bool silent = arg(argc, argv, "tp", "") == "silent";
         PDU_COP_CTRL_DATA tp{0, 1, 1, 0, {4, zeros}, 1, &er};
         results.clear();
         cop(PDU_COPT_SENDRECV, kwp({0x81, ecu, 0xF1, 0x3E}), &tp, 2);
-        if (!waitStatus(PDU_COPST_FINISHED) || results.size() != 1 || errors)
-            FAIL("TesterPresent");
+        if (!waitStatus(PDU_COPST_FINISHED) || results.size() != 1 || errors || results[0].empty() != silent || !tag2())
+            FAIL("TesterPresent: %d results, %d errors", (int)results.size(), errors);
+        if (silent) {
+            PDU_COP_CTRL_DATA tpf{0, 1, -2, 0, {4, zeros}, 1, &er};
+            auto ftp = kwp({0xC1, 0x33, 0xF1, 0x3E});
+            results.clear(); // functional (NumRecv -2) nobody answers: same deal
+            cop(PDU_COPT_SENDRECV, ftp, &tpf, 2);
+            if (!waitStatus(PDU_COPST_FINISHED) || results.size() != 1 || errors || !results[0].empty() || !tag2())
+                FAIL("functional TesterPresent: %d results, %d errors", (int)results.size(), errors);
+            results.clear(); // cancelled mid-read (Tech2Win does that on link disable): the RESULT still comes
+            UNUM32 h = cop(PDU_COPT_SENDRECV, ftp, &tpf, 2);
+            if (!waitStatus(PDU_COPST_EXECUTING) || CALL(PDUCancelComPrimitive, hMod, hCLL, h) || !waitStatus(PDU_COPST_CANCELLED))
+                FAIL("cancel functional TesterPresent");
+            for (int w = 0; w < 100 && results.empty(); w++)
+                waitStatus(0xFFFFFFFF, 10);
+            if (results.size() != 1 || errors || !tag2())
+                FAIL("cancelled TesterPresent: %d results, %d errors", (int)results.size(), errors);
+            results.clear(); // functional request (tag 1) nobody answers: FINISHED only, an ERROR kills the link
+            cop(PDU_COPT_SENDRECV, kwp({0xC2, 0x33, 0xF1, 0x1A, 0x90}), &tpf, 1);
+            if (!waitStatus(PDU_COPST_FINISHED) || !results.empty() || errors)
+                FAIL("functional request: %d results, %d errors", (int)results.size(), errors);
+        }
     }
 
     PDU_COP_CTRL_DATA stop{100, 0, 0, 0, {0, nullptr}, 0, nullptr};
@@ -595,6 +629,7 @@ int main(int argc, char **argv) {
         FAIL("STOPCOMM");
     if (CALL(PDUGetStatus, hMod, hCLL, PDU_HANDLE_UNDEF, &st, &ts, &x) || st != PDU_CLLST_ONLINE)
         FAIL("CLL not ONLINE after STOPCOMM");
+    }
 
     if (CALL(PDUDisconnect, hMod, hCLL) || !waitStatus(PDU_CLLST_OFFLINE))
         FAIL("Disconnect / OFFLINE");

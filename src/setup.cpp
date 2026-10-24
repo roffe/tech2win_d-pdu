@@ -167,6 +167,10 @@ static void readForm(HWND dlg) {
     g_cfg.pin7 = pinCombo(dlg, IDC_PIN7);
     g_cfg.pin8 = pinCombo(dlg, IDC_PIN8);
     g_cfg.pin78 = pinCombo(dlg, IDC_PIN78);
+    char buf[512];
+    GetDlgItemTextA(dlg, IDC_INITPINS, buf, sizeof(buf));
+    g_cfg.initPins = parseInitPins(buf);
+    SetDlgItemTextA(dlg, IDC_INITPINS, formatInitPins(g_cfg.initPins).c_str()); // shows what was understood
     g_cfg.log = IsDlgButtonChecked(dlg, IDC_LOG) == BST_CHECKED;
 }
 
@@ -197,6 +201,7 @@ static INT_PTR CALLBACK dlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM) {
         initPinCombo(dlg, IDC_PIN7, g_cfg.pin7);
         initPinCombo(dlg, IDC_PIN8, g_cfg.pin8);
         initPinCombo(dlg, IDC_PIN78, g_cfg.pin78);
+        SetDlgItemTextA(dlg, IDC_INITPINS, formatInitPins(g_cfg.initPins).c_str());
         CheckDlgButton(dlg, IDC_LOG, g_cfg.log ? BST_CHECKED : BST_UNCHECKED);
         SetDlgItemTextA(dlg, IDC_VERSION, APP_NAME " " APP_VERSION);
         refreshStatus(dlg);

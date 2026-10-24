@@ -258,6 +258,8 @@ struct Link {
     bool canRaw = false;          // ISO_11898_RAW link (TX only)
     int askedK = 0, askedL = 0;   // K-line pins Tech2Win asked for
     int pins = 7;                 // what we use: 7, 8 or 78 (K on 7 + L on 8)
+    int chPins = 0;               // what the open channel is on (FastInitPins can move it)
+    unsigned long chProto = 0;    // J2534 protocol of the open channel, messages must match it
     unsigned long baud = 0;
     Params working, active;
     std::vector<UrEntry> table; // CAN UniqueRespIdTable, guarded by mu
@@ -359,7 +361,8 @@ static void postResult(Link &l, const CoP &c, const UNUM8 *data, size_t n, UNUM3
     r->StartMsgTimestamp = rxStart;
     r->NumDataBytes = n;
     r->pDataBytes = flag + 4;
-    memcpy(r->pDataBytes, data, n);
+    if (n)
+        memcpy(r->pDataBytes, data, n);
     logf("CLL %u RX  hCoP=%u%s %s", (unsigned)l.h, (unsigned)c.h, rxFlag & RXF_TX_INDICATION ? " TX done" : "", hex(data, n).c_str());
     post(l, e);
 }
@@ -397,17 +400,18 @@ static void klineClose(Link &l) {
     std::lock_guard<std::mutex> g(l.mod->pt.mu);
     l.mod->pt.Disconnect(l.ch);
     l.chOpen = false;
+    l.chPins = 0;
 }
 
-static bool klineOpen(Link &l) {
+static bool klineOpen(Link &l, int pins) {
     PassThru &pt = l.mod->pt;
     // ponytail: plain ISO14230/9141 for pin 7, every adapter does that. _PS (J2534-2) only for 8 / 7+8.
-    bool ps = l.pins != 7;
+    bool ps = pins != 7;
     unsigned long proto = ps ? l.proto->j2534ps : l.proto->j2534;
-    unsigned long flags = ISO9141_NO_CHECKSUM | (l.pins == 78 ? 0 : ISO9141_K_LINE_ONLY);
+    unsigned long flags = ISO9141_NO_CHECKSUM | (pins == 78 ? 0 : ISO9141_K_LINE_ONLY);
     l.baud = pget(l.active, "CP_Baudrate", l.proto->baud);
     logf("CLL %u connect: asked K=%d L=%d, using %s -> proto 0x%lX flags 0x%lX baud %lu", (unsigned)l.h, l.askedK, l.askedL,
-         l.pins == 78 ? "K7+L8" : l.pins == 8 ? "K8" : "K7", proto, flags, l.baud);
+         pins == 78 ? "K7+L8" : pins == 8 ? "K8" : "K7", proto, flags, l.baud);
     long rc;
     {
         std::lock_guard<std::mutex> g(pt.mu);
@@ -418,8 +422,10 @@ static bool klineOpen(Link &l) {
         return false;
     }
     l.chOpen = true;
+    l.chPins = pins;
+    l.chProto = proto;
     if (ps) {
-        unsigned long v = l.pins == 78 ? 0x0708 : 0x0800;
+        unsigned long v = pins == 78 ? 0x0708 : 0x0800;
         if ((rc = pt.setConfig(l.ch, J1962_PINS, v)) != STATUS_NOERROR) {
             logf("  J1962_PINS 0x%04lX failed: %s (adapter can't do this pin, see the K-Line pins setup)", v, pt.err(rc).c_str());
             klineClose(l);
@@ -516,10 +522,30 @@ static bool responsePending(const Link &l, const PASSTHRU_MSG &m) {
     return m.DataSize >= hdr + 3 && m.Data[hdr] == 0x7F && m.Data[hdr + 2] == 0x78;
 }
 
+// FastInitPins: the fast init frame's target picks the pins, every other init goes back to the
+// link's own. Tech2Win never tells us when the firmware moves a module to another pin.
+static int initPins(const Link &l, const CoP &c, UNUM32 init) {
+    if (init == INIT_FAST && c.data.size() > 1 && (c.data[0] & 0xC0)) {
+        auto it = g_cfg.initPins.find(c.data[1]);
+        if (it != g_cfg.initPins.end())
+            return it->second;
+    }
+    return l.pins;
+}
+
 static void klineStartComm(Link &l, CoP &c) {
     PassThru &pt = l.mod->pt;
     UNUM32 init = pget(c.params, "CP_InitializationSettings", l.proto->init);
     long rc;
+    if (int pins = initPins(l, c, init); pins != l.chPins) {
+        logf("  target 0x%02X goes on %s, reconnecting", c.data.size() > 1 ? c.data[1] : 0, pins == 78 ? "K7+L8" : pins == 8 ? "K8" : "K7");
+        klineClose(l);
+        if (!klineOpen(l, pins)) {
+            postError(l, c, PDU_ERR_EVT_INIT_ERROR);
+            return;
+        }
+        klineParams(l); // the new channel starts from adapter defaults
+    }
     if (init == INIT_5BAUD) {
         // RESULT must be exactly [KB1 KB2], Tech2Win replays the handshake to the firmware itself
         unsigned char addr = pget(c.params, "CP_5BaudAddressPhys", 0x33), kb[2] = {};
@@ -534,7 +560,7 @@ static void klineStartComm(Link &l, CoP &c) {
         postResult(l, c, kb, 2, 0, nowUs());
     } else if (init == INIT_FAST) {
         PASSTHRU_MSG req{}, resp{};
-        req.ProtocolID = resp.ProtocolID = l.proto->j2534;
+        req.ProtocolID = resp.ProtocolID = l.chProto;
         req.DataSize = c.data.size();
         memcpy(req.Data, c.data.data(), c.data.size());
         pt.ioctl(l.ch, CLEAR_RX_BUFFER, nullptr, nullptr);
@@ -551,14 +577,33 @@ static void klineStartComm(Link &l, CoP &c) {
     setLinkStatus(l, PDU_CLLST_COMM_STARTED);
 }
 
+// Tech2Win's own TesterPresent on a KW2000 link: pCoPTag -> 2, NumRecv 1 (or -2 functional).
+// Tech2Win drops its RESULT, but that RESULT is what reopens its send gate. An ERROR doesn't, and
+// it kills the link (notes host_api_kw2000.md 11.6). With neither, the next firmware request puts
+// Tech2Win's worker in a loop that starves shutdown, and the next protocol switch or exit hangs it
+// (11.5). So it ends with a RESULT, empty if the ECU stays quiet or it got cancelled, never an ERROR.
+// Other D-PDU hosts may use small integers as tags, the low 64 KB is never mapped on Win32.
+static bool hostTesterPresent(const Link &l, const CoP &c) {
+    return l.proto->j2534 == ISO14230 && (uintptr_t)c.tag >= 0x10000 && *(const int *)c.tag == 2;
+}
+
 // Returns false when the CoP turned into the link's listener (NumRecv -1, no FINISHED yet).
 static bool klineSendRecv(Link &l, std::shared_ptr<CoP> cp) {
     CoP &c = *cp;
     PassThru &pt = l.mod->pt;
     UNUM32 txDone = 0;
+    bool tp = hostTesterPresent(l, c), answered = false;
+    auto fail = [&](T_PDU_ERR_EVT code) {
+        if (!tp) {
+            postError(l, c, code);
+        } else if (!answered) {
+            logf("  no answer to Tech2Win's TesterPresent, empty RESULT so it can send again");
+            postResult(l, c, nullptr, 0, txDone, nowUs());
+        }
+    };
     if (!c.data.empty() && c.sendCycles != 0) {
         PASSTHRU_MSG m{};
-        m.ProtocolID = l.proto->j2534;
+        m.ProtocolID = l.chProto;
         m.DataSize = c.data.size();
         memcpy(m.Data, c.data.data(), c.data.size());
         unsigned long n = 1;
@@ -578,7 +623,7 @@ static bool klineSendRecv(Link &l, std::shared_ptr<CoP> cp) {
         logf("CLL %u TX  hCoP=%u %s", (unsigned)l.h, (unsigned)c.h, hex(m.Data, m.DataSize).c_str());
         if (rc != STATUS_NOERROR) {
             logf("  PassThruWriteMsgs failed: %s", pt.err(rc).c_str());
-            postError(l, c, PDU_ERR_EVT_TX_ERROR);
+            fail(PDU_ERR_EVT_TX_ERROR);
             return true;
         }
     }
@@ -596,16 +641,17 @@ static bool klineSendRecv(Link &l, std::shared_ptr<CoP> cp) {
         UNUM32 start;
         long rc = readFrame(l, c, m, timeout, start);
         if (rc == ERR_TIMEOUT) {
-            if (c.recvCycles > 0 && !cancelled(l, c))
-                postError(l, c, PDU_ERR_EVT_RX_TIMEOUT);
+            if (tp || (c.recvCycles > 0 && !cancelled(l, c)))
+                fail(PDU_ERR_EVT_RX_TIMEOUT);
             break;
         }
         if (rc != STATUS_NOERROR) {
             logf("  PassThruReadMsgs failed: %s", pt.err(rc).c_str());
-            postError(l, c, PDU_ERR_EVT_RX_ERROR);
+            fail(PDU_ERR_EVT_RX_ERROR);
             break;
         }
         postResult(l, c, m.Data, m.DataSize, txDone, start);
+        answered = true;
         bool pending = responsePending(l, m);
         timeout = pending ? pget(c.params, "CP_P2Star", 5000000) / 1000 : p2;
         if (!pending)
@@ -1187,7 +1233,7 @@ EXPORT PDUConstruct(CHAR8 *opt, void *) {
     std::lock_guard<std::mutex> g(g_mu);
     g_cfg = loadConfig();
     logf("---- " APP_NAME " " APP_VERSION " PDUConstruct opt='%s'", opt ? opt : "");
-    logf("K-line pins: 7 -> %d, 8 -> %d, 7+8 -> %d", g_cfg.pin7, g_cfg.pin8, g_cfg.pin78);
+    logf("K-line pins: 7 -> %d, 8 -> %d, 7+8 -> %d, fast init [%s]", g_cfg.pin7, g_cfg.pin8, g_cfg.pin78, formatInitPins(g_cfg.initPins).c_str());
     scanModules();
     return PDU_STATUS_NOERROR;
 }
@@ -1514,7 +1560,7 @@ EXPORT PDUConnect(UNUM32 hMod, UNUM32 hCLL) {
         std::lock_guard<std::mutex> g(l->mu);
         l->active = l->working; // ComParams set before Connect (SDL, all of CAN) apply now
     }
-    if (l->proto && !l->chOpen && !klineOpen(*l))
+    if (l->proto && !l->chOpen && !klineOpen(*l, l->pins))
         return PDU_ERR_FCT_FAILED;
     if (l->can && !l->canRaw)
         l->can->baud = pget(l->active, "CP_Baudrate", l->can->baud);

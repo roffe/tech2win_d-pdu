@@ -37,9 +37,15 @@ The setup tool lets you decide what to use for each case:
 - Tech2Win asks for pin 8: use pin 8, if your adapter can switch K-Line to pin 8 (J2534-2 pin switching).
 - Tech2Win asks for pins 7 + 8: use pin 7. That's the default.
 
-If your OBD outlet has pin 7 and 8 bridged, set all three to pin 7 and you reach everything including the brakes, on any adapter.
+If your OBD outlet has pin 7 and 8 bridged, set all three to pin 7, empty the fast init list below and you reach everything including the brakes, on any adapter.
 
 Pin 7 uses plain ISO14230/ISO9141 which every adapter supports. Pin 8 and "pin 7 + L-line on 8" need an adapter with J2534-2 pin switching.
+
+### Fast init forced pins
+
+The Tech2 firmware does pick the right pin per module, but Tech2Win only builds its K-Line link once (with the pins of the first module, usually DICE on 7) and drops every pin change after that. So ABS gets fast inits on pin 7 and never answers.
+
+The fix is the "Fast init to these addresses forces the pin" list: when a fast init goes to one of these addresses the driver moves the K-Line to that pin first, and back to the normal pin for everything else. Format is hex address:pin, default `24:8 28:8 70:8`, which is what the SAAB card puts on pin 8 (0x28 = ABS/TC and ESP, 0x70 = AHL). In the ini it's `FastInitPins` under `[kline]`. Empty = off.
 
 ## Problems?
 

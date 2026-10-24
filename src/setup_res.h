@@ -10,3 +10,4 @@
 #define IDC_LOG       1009
 #define IDC_OPENLOG   1010
 #define IDC_VERSION   1011
+#define IDC_INITPINS  1012

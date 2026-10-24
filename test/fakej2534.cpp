@@ -4,6 +4,7 @@
 //
 // K-line: 0x41 (DICE) sits on pin 7, 0x28 (ABS/TC) on pin 8. FAKE_BRIDGED=1
 // simulates a 7+8 bridged OBD outlet (everything answers on either pin).
+// FAKE_NO_TP=1: the KWP2000 ECUs ignore TesterPresent ($3E).
 // CAN: one GMLAN ECU per bus doing ISO-TP (multi-frame both ways, flow control,
 // padding, response pending, UUDT), plus unrelated bus traffic.
 // Every call is logged to FAKE_LOG so the test can check what the DLL did.
@@ -22,6 +23,7 @@
 #define ERR_INVALID_CHANNEL_ID  0x02
 #define ERR_INVALID_PROTOCOL_ID 0x05
 #define ERR_INVALID_IOCTL_VALUE 0x1A
+#define ERR_MSG_PROTOCOL_ID     0x15
 #define CAN         0x05
 #define CAN_PS      0x8004
 #define SW_CAN_PS   0x8008
@@ -137,7 +139,7 @@ static void klineWrite(Chan &c, const PASSTHRU_MSG &m) {
     unsigned char tgt = m.Data[1];
     int hdr = (m.Data[0] & 0x3F) ? 3 : 4;
     int len = (m.Data[0] & 0x3F) ? (m.Data[0] & 0x3F) : m.Data[3];
-    if (!ecuReachable(c, tgt) || len < 1)
+    if (!ecuReachable(c, tgt) || len < 1 || (m.Data[hdr] == 0x3E && getenv("FAKE_NO_TP")))
         return;
     unsigned char resp[260];
     resp[0] = m.Data[hdr] + 0x40; // positive response, echo the rest
@@ -344,6 +346,10 @@ long WINAPI PassThruWriteMsgs(unsigned long ch, PASSTHRU_MSG *msgs, unsigned lon
     Chan &c = it->second;
     for (unsigned long i = 0; i < *num; i++) {
         const PASSTHRU_MSG &m = msgs[i];
+        if (m.ProtocolID != c.proto) {
+            lastErr = "message protocol differs from the channel";
+            return ERR_MSG_PROTOCOL_ID;
+        }
         logf("Write%s %s", m.TxFlags ? (" flags=" + std::to_string(m.TxFlags)).c_str() : "", hex(m.Data, m.DataSize).c_str());
         if (isCan(c.proto))
             canWrite(c, m);
@@ -423,6 +429,10 @@ long WINAPI PassThruIoctl(unsigned long ch, unsigned long id, void *in, void *ou
     case FAST_INIT: {
         PASSTHRU_MSG *req = (PASSTHRU_MSG *)in, *resp = (PASSTHRU_MSG *)out;
         logf("FastInit %s pins=0x%04lX", hex(req->Data, req->DataSize).c_str(), c.pins);
+        if (req->ProtocolID != c.proto) {
+            lastErr = "message protocol differs from the channel";
+            return ERR_MSG_PROTOCOL_ID;
+        }
         if (!ecuReachable(c, req->Data[1])) {
             lastErr = "no response to fast init";
             return ERR_TIMEOUT;

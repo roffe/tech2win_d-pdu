@@ -1,6 +1,8 @@
 #include "common.h"
 #include <windows.h>
 #include <algorithm>
+#include <cstdio>
+#include <sstream>
 
 static std::string regString(HKEY k, const char *name) {
     char buf[1024];
@@ -53,8 +55,34 @@ Config loadConfig() {
     c.pin7 = pinValue(GetPrivateProfileIntA("kline", "Pin7", c.pin7, ini.c_str()), c.pin7);
     c.pin8 = pinValue(GetPrivateProfileIntA("kline", "Pin8", c.pin8, ini.c_str()), c.pin8);
     c.pin78 = pinValue(GetPrivateProfileIntA("kline", "Pin7and8", c.pin78, ini.c_str()), c.pin78);
+    char buf[512];
+    GetPrivateProfileStringA("kline", "FastInitPins", formatInitPins(c.initPins).c_str(), buf, sizeof(buf), ini.c_str());
+    c.initPins = parseInitPins(buf); // present but empty = no forced pins
     c.log = GetPrivateProfileIntA("settings", "Log", c.log, ini.c_str()) != 0;
     return c;
+}
+
+std::map<int, int> parseInitPins(std::string s) {
+    std::replace(s.begin(), s.end(), ',', ' ');
+    std::istringstream in(s);
+    std::map<int, int> m;
+    for (std::string t; in >> t;) {
+        unsigned a;
+        int pin;
+        if (sscanf(t.c_str(), "%x:%d", &a, &pin) == 2 && a < 0x100 && pinValue(pin, 0))
+            m[a] = pin;
+    }
+    return m;
+}
+
+std::string formatInitPins(const std::map<int, int> &m) {
+    std::string s;
+    char b[16];
+    for (auto &[a, pin] : m) {
+        snprintf(b, sizeof(b), "%s%02X:%d", s.empty() ? "" : " ", a, pin);
+        s += b;
+    }
+    return s;
 }
 
 bool saveConfig(const Config &c) {
@@ -63,5 +91,6 @@ bool saveConfig(const Config &c) {
     return WritePrivateProfileStringA("settings", "Log", c.log ? "1" : "0", f) &&
            WritePrivateProfileStringA("kline", "Pin7", std::to_string(c.pin7).c_str(), f) &&
            WritePrivateProfileStringA("kline", "Pin8", std::to_string(c.pin8).c_str(), f) &&
-           WritePrivateProfileStringA("kline", "Pin7and8", std::to_string(c.pin78).c_str(), f);
+           WritePrivateProfileStringA("kline", "Pin7and8", std::to_string(c.pin78).c_str(), f) &&
+           WritePrivateProfileStringA("kline", "FastInitPins", formatInitPins(c.initPins).c_str(), f);
 }

@@ -82,6 +82,12 @@ Scope: link type 0x1308 (KW2000, Tech2Win mode 1) only. SAAB links on 0x1305 (KW
     init and no STARTCOMM is ever sent. All other SetComParam/IoCtl failures are only logged.
 16. Registry value under HKLM is read by a 32-bit process: on x64 it is
     `HKLM\SOFTWARE\WOW6432Node\D-PDU API` value `Root File`, max 129 characters.
+17. Tech2Win's own TesterPresent (SENDRECV with pCoPTag -> 2, NumRecv 1, or -2 when functional)
+    must end with at least one RESULT, also when the ECU stays quiet or the CoP gets cancelled.
+    An empty one is fine, the bytes never reach the firmware. That RESULT reopens Tech2Win's send
+    gate. An ERROR doesn't, and it kills the link (11.6). With neither, the next firmware request
+    starts a loop in Tech2Win's worker that starves shutdown, so the next protocol switch or exit
+    hangs Tech2Win (see 11.5). Never fail PDUStartComPrimitive for it either.
 
 ----------------------------------------------------------------------------------------------
 
@@ -408,7 +414,8 @@ an older CoP satisfies a later wait.
   SetUniqueRespIdTable is used once (CAN code, not KW2000). Export them anyway.
 - "No communication" is the firmware's own screen. From the host side it happens when: the
   STARTCOMM RESULT misses the P2 window (11.3), an ERROR item kills the link (11.6), the
-  TesterPresent CoP never gets a RESULT (11.5), or a required STATUS item is missing (10 s stalls).
+  TesterPresent CoP never gets a RESULT (11.5; with no ERROR either it also hangs Tech2Win on the
+  next protocol switch or exit), or a required STATUS item is missing (10 s stalls).
 
 ----------------------------------------------------------------------------------------------
 
@@ -723,6 +730,8 @@ wait CANCELLED -> Start -> wait EXECUTING. Make cancel and the status items fast
 
 If the internal TP CoP is still waiting for its RESULT (`DAT_00d81678 == 0`), a new firmware
 request is deferred: `Sleep(5); SetEvent(New Transmit Message)` in a loop until it arrives.
+Only a tag-2 RESULT, or a firmware link disable/reset/close followed by enable, ends that loop.
+An ERROR doesn't (11.5).
 
 Internal TesterPresent, thread case 2 74626-74837: see 11.5.
 
@@ -818,8 +827,45 @@ type 4 `80|f ECU TESTER 01 3E cs`, type 3 `81|f ECU TESTER 3E cs`, type 2 `f 01 
 `f|1 3E cs`. ECU = 'IA'/'IR' (else source byte of the StartComm response), TESTER = 'IS' (else its
 target byte).
 The RESULT of this CoP (tag value 2) is dropped (never reaches the firmware) but it is what
-clears `DAT_00d81678`; until then firmware requests are deferred (10.2). An ECU that ignores the
-$3E therefore blocks Tech2Win until an ERROR item or a link re-enable.
+clears `DAT_00d81678`; until then firmware requests are deferred (10.2).
+
+What sets `DAT_00d81678` back to 1: a RESULT with tag 2 (worker drain 73970, wait drain 76068),
+link enable from state 0 (75242; event 9 returns at 75070 in any other state, so the firmware
+has to disable/reset/close the link first) and Init (0x4739d8, new instance only). An ERROR item
+does not, the 0x1302 case (73976-73988) never touches it.
+
+While it is 0, the next request Tech2Win forwards to the worker (the firmware's own $3E is
+answered locally and never gets there, 11.4) lands in thread case 1 (74001). Case 1 cancels the
+TP timer, does `Sleep(5); SetEvent(New Transmit Message)` and goes round again.
+WaitForMultipleObjects returns the lowest signalled index, so only Callback (0) still gets
+through. The TP timer (2), Shutdown (3) and Stop Comm (5) all starve, so Tech2Win never retries
+the TP by itself and a late tag-2 RESULT is the only way out from inside the worker. Close
+(0x478b60) is `SetEvent(Shutdown)` then `while (!DAT_00d81680) Sleep(1)` with no timeout. It runs
+from FUN_00459d40 on every protocol mode change: trap_spy EN (17760) and a CANdi Link_Open
+(17551) on the CPU thread, the mode 0xd switches (56732, 56772, 56886, 88466), and exit
+(FUN_00459d10, 57124) on the main thread.
+
+So a TP that ends with neither RESULT nor ERROR (ECU off or reset, TP to a stale or absent 'IA',
+and a DLL that posts only FINISHED or nothing at all), plus one forwarded request, freezes
+Tech2Win on the next protocol switch or exit. A disable + enable before that reopens the gate,
+but the loop's next pass then runs the init with the deferred request still staged in
+`DAT_00d75268` (71958, 74468-74472) as the STARTCOMM payload, so expect one failed init first.
+
+A standard MVCI that answers silence with ERROR + FINISHED gets the 11.6 link reset instead.
+After the ERROR link-up is 0 and FUN_00471430 drops every frame before it can signal the worker
+(71880), so it only hangs if a request was forwarded during the TP's own P2 window, before the
+ERROR was drained.
+
+Case 2 clears the gate (74692) before it checks for a template (`DAT_00d7ef24 == 0`,
+74703/74764) and before PDUStartComPrimitive, and a failure there is only logged. The gate then
+stays shut with no CoP for the DLL to answer. So never fail PDUStartComPrimitive for the tag-2
+SENDRECV, and pass the first STARTCOMM RESULT through as it is (the C1 response, or exactly
+[KB1 KB2] for 5-baud) so a template gets built.
+
+DLL rule: end every tag-2 CoP with at least one RESULT, also when it gets cancelled. If nothing
+comes within P2max, or TX/RX fails, post an empty RESULT, then FINISHED, and no ERROR. If the ECU
+is really gone the firmware finds out from its next request, and if it only ignores $3E the
+session keeps going.
 
 ### 11.6 STATUS / ERROR / timeouts
 
@@ -827,16 +873,20 @@ $3E therefore blocks Tech2Win until an ERROR item or a link re-enable.
   waits, no side effects.
 - ERROR item on the CLL, any code, any CoP: cancel TP timer, stop the DEADBEEF filler, drop any
   staged/fake message, mark TX ready, and **set link-up = 0** (`DAT_00d816e8`); state 1 -> 2.
+  It does not touch the TP gate `DAT_00d81678` (11.5).
   With link-up 0 every firmware frame is dropped by `FUN_00471430` and nothing is delivered.
   Recovery only via firmware link disable/reset/close (state 2 -> 0) followed by link enable
   (event 9 sets link-up again and re-runs the init on the next firmware frame).
 - No ERROR on a failed STARTCOMM is worse: Tech2Win stays in state 1 with "TX ready" cleared, so
   every firmware retry is dropped, and link disable does nothing in state 1. Emit an ERROR (e.g.
   PDU_ERR_EVT_INIT_ERROR 0x108 or RX_TIMEOUT 0x103) then FINISHED.
-- For the internal TP (NumRecv 1) with no answer: ERROR + FINISHED is what a standard MVCI does
-  and leads to the link reset above.
-- For -1/-2 SENDRECVs: never ERROR on silence, stay EXECUTING until cancelled (for -2 a FINISHED
-  after P2max is harmless).
+- For the internal TP (tag 2, NumRecv 1 or -2) with no answer: ERROR + FINISHED is what a
+  standard MVCI does and leads to the link reset above, and the gate stays shut (11.5). Better:
+  an empty tag-2 RESULT, then FINISHED, no ERROR, so the link stays up. Never a bare FINISHED or
+  nothing at all, that's the hang in 11.5.
+- For tag-1 -1/-2 SENDRECVs (firmware requests): never ERROR on silence, stay EXECUTING until
+  cancelled (for -2 a FINISHED after P2max is harmless). The tag-2 TP above is the exception: it
+  always gets a RESULT before FINISHED.
 - Tech2Win itself has no P2 timeout towards the DLL; the firmware owns all protocol timeouts.
   Its only timeouts are the 10 s idle in waits and the 6.25 s DEADBEEF limit.
 
