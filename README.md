@@ -1,5 +1,7 @@
 # t2wdpdu
 
+![Config/Setup](config.jpg)
+
 D-PDU API driver for GM Tech2Win that talks to any J2534 v04.04 adapter. Drop in, install with the setup tool, pick your adapter in Tech2Win and go.
 
 Written against how Tech2Win actually drives its D-PDU interface (pulled out of emulator.exe), not guessed from logs. Statically linked, so no Visual C++ redistributable needed.
